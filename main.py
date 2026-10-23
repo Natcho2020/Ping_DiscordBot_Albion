@@ -118,12 +118,60 @@ bot = AlbionBot(command_prefix="!", intents=intents)
 class InscripcionView(discord.ui.View):
     def __init__(self, roles, message_id, thread_id):
         super().__init__(timeout=None)
+        ping = pings_db.get(str(message_id), {})
+        # Crear botones de roles
         for idx, role in enumerate(roles):
-            self.add_item(InscripcionButton(role, message_id, thread_id, idx))
+            disabled = False
+            if ping:
+                if role_registration_count(ping, role) >= role_capacity(ping, role):
+                    disabled = True
+            self.add_item(InscripcionButton(role, message_id, thread_id, idx, disabled))
+        # Boton de cancelar
+        self.add_item(CancelarButton(message_id, thread_id))
+
+class CancelarButton(discord.ui.Button):
+    def __init__(self, message_id, thread_id):
+        super().__init__(label="❌ Cancelar mi inscripción", style=discord.ButtonStyle.danger, custom_id=f"cancel_{message_id}", row=1)
+        self.message_id = message_id
+        self.thread_id = thread_id
+
+    async def callback(self, interaction: discord.Interaction):
+        ping = pings_db.get(str(self.message_id))
+        if not ping:
+            await interaction.response.send_message("Ping no disponible", ephemeral=True)
+            return
+        
+        uid = str(interaction.user.id)
+        if uid not in ping.get("registrations", {}):
+            await interaction.response.send_message("No estás anotado en ningún rol.", ephemeral=True)
+            return
+
+        rol_lib = ping["registrations"].pop(uid)
+        save_pings()
+        await interaction.response.defer(ephemeral=True)
+
+        # Actualizar hilo y mensaje principal
+        try:
+            thread = bot.get_channel(self.thread_id) or await bot.fetch_channel(self.thread_id)
+            await thread.send(f"{interaction.user.mention} canceló su inscripción como {rol_lib} ❌")
+        except: pass
+
+        try:
+            channel = bot.get_channel(ping["channel_id"]) or await bot.fetch_channel(ping["channel_id"])
+            msg = await channel.fetch_message(self.message_id)
+            # Reconstruir vista con botones habilitados de nuevo
+            new_view = InscripcionView(ping["roles"], self.message_id, self.thread_id)
+            new_embed = build_main_embed(ping)
+            await msg.edit(embed=new_embed, view=new_view)
+            bot.add_view(new_view, message_id=self.message_id)
+        except Exception as e:
+            print(f"Error en cancelar: {e}")
+
+        await interaction.followup.send(f"Cancelaste {rol_lib}, tu cupo quedó libre.", ephemeral=True)
 
 class InscripcionButton(discord.ui.Button):
-    def __init__(self, role_name, message_id, thread_id, index):
-        super().__init__(label=f"Apuntarme: {role_name}", style=discord.ButtonStyle.secondary, custom_id=f"signup_{message_id}_{index}")
+    def __init__(self, role_name, message_id, thread_id, index, disabled=False):
+        super().__init__(label=f"Apuntarme: {role_name}", style=discord.ButtonStyle.secondary, custom_id=f"signup_{message_id}_{index}", disabled=disabled)
         self.role_name = role_name
         self.message_id = message_id
         self.thread_id = thread_id
@@ -131,37 +179,34 @@ class InscripcionButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         ping = pings_db.get(str(self.message_id))
         if not ping:
-            await interaction.response.send_message("Este ping ya no está disponible.", ephemeral=True)
+            await interaction.response.send_message("Ping no disponible", ephemeral=True)
             return
         regs = ping.setdefault("registrations", {})
         uid = str(interaction.user.id)
         if uid in regs:
-            await interaction.response.send_message(f"Ya estás como {regs[uid]}.", ephemeral=True)
+            await interaction.response.send_message(f"Ya estás como {regs[uid]}. Usa Cancelar para cambiar.", ephemeral=True)
             return
         if role_registration_count(ping, self.role_name) >= role_capacity(ping, self.role_name):
             await interaction.response.send_message(f"No quedan plazas para {self.role_name}.", ephemeral=True)
             return
-
         regs[uid] = self.role_name
         save_pings()
         await interaction.response.defer(ephemeral=True)
-
         try:
             thread = bot.get_channel(self.thread_id) or await bot.fetch_channel(self.thread_id)
             await thread.send(f"{interaction.user.mention} se apuntó como {self.role_name} ✅")
-        except Exception as e:
-            print(f"Error hilo: {e}")
-
+        except:
+            pass
         try:
             channel = bot.get_channel(ping["channel_id"]) or await bot.fetch_channel(ping["channel_id"])
             msg = await channel.fetch_message(self.message_id)
+            new_view = InscripcionView(ping["roles"], self.message_id, self.thread_id)
             new_embed = build_main_embed(ping)
-            await msg.edit(embed=new_embed)
+            await msg.edit(embed=new_embed, view=new_view)
+            bot.add_view(new_view, message_id=self.message_id)
         except Exception as e:
-            print(f"Error editando embed principal: {e}")
-
+            print(f"Error editando: {e}")
         await interaction.followup.send(f"Te apuntaste como {self.role_name}.", ephemeral=True)
-
 class WeaponModal(discord.ui.Modal, title="Arma para este rol"):
     arma = discord.ui.TextInput(label="¿Qué arma?", placeholder="Ej: Camlann, Bloodletter", max_length=30)
     def __init__(self, user_id, rol):
