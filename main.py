@@ -92,9 +92,12 @@ class AlbionBot(commands.Bot):
         for message_id, ping in stored_pings.items():
             view = InscripcionView(ping["roles"], int(message_id), int(ping["thread_id"]))
             self.add_view(view, message_id=int(message_id))
+        # ESTO ES LO QUE TE FALTABA: registrar el panel principal para que nunca muera
+        self.add_view(MainView())
         print(f"Vistas de inscripción restauradas: {len(stored_pings)}")
-
-bot = AlbionBot(command_prefix="!", intents=intents)
+        print("MainView persistente registrado")
+        
+bot = AlbionBot(command_prefix="!", intents=intents) # <-- ESTA LINEA TE FALTABA
 
 class InscripcionView(discord.ui.View):
     def __init__(self, roles, message_id, thread_id):
@@ -495,8 +498,9 @@ class AgregarModal(discord.ui.Modal, title="Agregar actividad"):
 class MainView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-    @discord.ui.button(label="🎯 Crear Nuevo Ping", style=discord.ButtonStyle.primary)
-    async def crear(self, interaction, button):
+
+    @discord.ui.button(label="🎯 Crear Nuevo Ping", style=discord.ButtonStyle.primary, custom_id="crear_nuevo_ping_main")
+    async def crear(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(view=ActividadesView(interaction.user.id), embed=discord.Embed(title="Elige actividad", color=0xD4A44A), ephemeral=True)
 
 # --- DEBES AGREGAR UN COMANDO PARA MOSTRAR EL MAINVIEW ---
