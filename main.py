@@ -1,19 +1,26 @@
-import json
-import os
-import re
-from datetime import datetime
-
 import discord
 from discord.ext import commands
+import os
+import json
+import re
+from datetime import datetime
+from threading import Thread
+from flask import Flask
 
+# Mini servidor web para Render Free
+app_flask = Flask(__name__)
+PINGS_DB_PATH = "pings.json"
 
-TOKEN = os.environ.get("TOKEN")
-if not TOKEN:
-    raise RuntimeError("Falta el secreto TOKEN. Configúralo en Replit Secrets.")
+@app_flask.route('/')
+def home():
+    return "Bot Albion Online - ONLINE"
 
-PINGS_DB_PATH = os.path.join(os.path.dirname(__file__), "pings.json")
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app_flask.run(host="0.0.0.0", port=port)
 
-intents = discord.Intents.all()
+intents = discord.Intents.default()
+intents.message_content = True
 
 actividades = [
     "Dorados",
@@ -27,17 +34,14 @@ actividades = [
 ping_data = {}
 pings_db = {}
 
-
 def load_pings():
     try:
         with open(PINGS_DB_PATH, "r", encoding="utf-8") as file:
             stored_pings = json.load(file)
     except FileNotFoundError:
         return {}
-
     if not isinstance(stored_pings, dict):
         raise ValueError("El archivo de pings debe contener un objeto JSON.")
-
     for message_id, ping in stored_pings.items():
         if not isinstance(ping, dict) or not isinstance(ping.get("roles"), list):
             raise ValueError(f"Registro de ping inválido para el mensaje {message_id}.")
@@ -51,21 +55,9 @@ def load_pings():
                 raise TypeError("Los roles del ping deben ser texto.")
             if not isinstance(registrations, dict):
                 raise TypeError("Las inscripciones deben ser un objeto.")
-            if not all(
-                isinstance(user_id, str)
-                and user_id.isdigit()
-                and isinstance(role, str)
-                and role in ping["roles"]
-                for user_id, role in registrations.items()
-            ):
-                raise TypeError("Las inscripciones del ping no son válidas.")
         except (KeyError, TypeError, ValueError) as error:
-            raise ValueError(
-                f"Registro de ping inválido para el mensaje {message_id}."
-            ) from error
-
+            raise ValueError(f"Registro de ping inválido para el mensaje {message_id}.") from error
     return stored_pings
-
 
 def save_pings():
     temporary_path = f"{PINGS_DB_PATH}.tmp"
@@ -73,16 +65,13 @@ def save_pings():
         json.dump(pings_db, file, ensure_ascii=False, indent=2)
     os.replace(temporary_path, PINGS_DB_PATH)
 
-
 def role_capacity(ping, role_name):
     return ping.get("roles", []).count(role_name)
-
 
 def number_role_slots(roles):
     totals = {}
     for role_name in roles:
         totals[role_name] = totals.get(role_name, 0) + 1
-
     occurrences = {}
     numbered_roles = []
     for role_name in roles:
@@ -93,115 +82,57 @@ def number_role_slots(roles):
             numbered_roles.append(role_name)
     return numbered_roles
 
-
 def role_registration_count(ping, role_name):
-    return sum(
-        registered_role == role_name
-        for registered_role in ping.get("registrations", {}).values()
-    )
-
+    return sum(registered_role == role_name for registered_role in ping.get("registrations", {}).values())
 
 class AlbionBot(commands.Bot):
     async def setup_hook(self):
         stored_pings = load_pings()
         pings_db.update(stored_pings)
-
         for message_id, ping in stored_pings.items():
-            view = InscripcionView(
-                ping["roles"],
-                int(message_id),
-                int(ping["thread_id"]),
-            )
+            view = InscripcionView(ping["roles"], int(message_id), int(ping["thread_id"]))
             self.add_view(view, message_id=int(message_id))
-
         print(f"Vistas de inscripción restauradas: {len(stored_pings)}")
 
-
 bot = AlbionBot(command_prefix="!", intents=intents)
-
 
 class InscripcionView(discord.ui.View):
     def __init__(self, roles, message_id, thread_id):
         super().__init__(timeout=None)
         for index, role_name in enumerate(roles):
-            self.add_item(
-                InscripcionButton(role_name, message_id, thread_id, index)
-            )
-
+            self.add_item(InscripcionButton(role_name, message_id, thread_id, index))
 
 class InscripcionButton(discord.ui.Button):
     def __init__(self, role_name, message_id, thread_id, index):
-        super().__init__(
-            label=f"Apuntarme: {role_name}",
-            style=discord.ButtonStyle.secondary,
-            custom_id=f"signup_{message_id}_{index}",
-        )
+        super().__init__(label=f"Apuntarme: {role_name}", style=discord.ButtonStyle.secondary, custom_id=f"signup_{message_id}_{index}")
         self.role_name = role_name
         self.message_id = message_id
         self.thread_id = thread_id
-
     async def callback(self, interaction: discord.Interaction):
         ping = pings_db.get(str(self.message_id))
         if ping is None:
-            await interaction.response.send_message(
-                "Este ping ya no está disponible.",
-                ephemeral=True,
-            )
+            await interaction.response.send_message("Este ping ya no está disponible.", ephemeral=True)
             return
-
         registrations = ping.setdefault("registrations", {})
         user_id = str(interaction.user.id)
-        existing_role = registrations.get(user_id)
-        if existing_role is not None:
-            await interaction.response.send_message(
-                f"Ya estás apuntado como {existing_role} en este ping.",
-                ephemeral=True,
-            )
+        if user_id in registrations:
+            await interaction.response.send_message(f"Ya estás apuntado como {registrations[user_id]}.", ephemeral=True)
             return
-
-        if role_registration_count(ping, self.role_name) >= role_capacity(
-            ping,
-            self.role_name,
-        ):
-            await interaction.response.send_message(
-                f"Ya no quedan plazas para {self.role_name}.",
-                ephemeral=True,
-            )
+        if role_registration_count(ping, self.role_name) >= role_capacity(ping, self.role_name):
+            await interaction.response.send_message(f"Ya no quedan plazas para {self.role_name}.", ephemeral=True)
             return
-
-        # Reserve before the first await so duplicate buttons cannot register
-        # the same user for multiple slots or exceed the role's capacity.
         registrations[user_id] = self.role_name
         save_pings()
         await interaction.response.defer(ephemeral=True)
-
         try:
-            thread = bot.get_channel(self.thread_id)
-            if thread is None:
-                thread = await bot.fetch_channel(self.thread_id)
-            await thread.send(
-                f"{interaction.user.mention} se apuntó como {self.role_name} ✅"
-            )
-        except discord.HTTPException as error:
+            thread = bot.get_channel(self.thread_id) or await bot.fetch_channel(self.thread_id)
+            await thread.send(f"{interaction.user.mention} se apuntó como {self.role_name} ✅")
+        except discord.HTTPException:
             registrations.pop(user_id, None)
             save_pings()
-            print(
-                f"No se pudo publicar la inscripción de {user_id} "
-                f"para {self.role_name}: {error}"
-            )
-            await interaction.followup.send(
-                "No pude completar tu inscripción porque el hilo no está "
-                "disponible. Inténtalo de nuevo.",
-                ephemeral=True,
-            )
+            await interaction.followup.send("No pude completar tu inscripción.", ephemeral=True)
             return
-
-        await interaction.followup.send(
-            f"Te apuntaste como {self.role_name}.",
-            ephemeral=True,
-        )
-
-
+        await interaction.followup.send(f"Te apuntaste como {self.role_name}.", ephemeral=True)
 class WeaponModal(discord.ui.Modal, title="Arma para este rol"):
     arma = discord.ui.TextInput(
         label="¿Qué arma?",
@@ -561,36 +492,23 @@ class AgregarModal(discord.ui.Modal, title="Agregar actividad"):
             ephemeral=True,
         )
 
-
 class MainView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="🎯 Crear Nuevo Ping",
-        style=discord.ButtonStyle.primary,
-    )
+    @discord.ui.button(label="🎯 Crear Nuevo Ping", style=discord.ButtonStyle.primary)
     async def crear(self, interaction, button):
-        await interaction.response.send_message(
-            view=ActividadesView(interaction.user.id),
-            embed=discord.Embed(title="Elige actividad", color=0xD4A44A),
-            ephemeral=True,
-        )
+        await interaction.response.send_message(view=ActividadesView(interaction.user.id), embed=discord.Embed(title="Elige actividad", color=0xD4A44A), ephemeral=True)
 
+# --- DEBES AGREGAR UN COMANDO PARA MOSTRAR EL MAINVIEW ---
+@bot.command()
+async def ping(ctx):
+    await ctx.send(embed=discord.Embed(title="Panel de Pings Albion", color=0xD4A44A), view=MainView())
 
 @bot.event
 async def on_ready():
-    print(f"Conectado {bot.user}")
-    await bot.tree.sync()
-
-
-@bot.tree.command(name="ping", description="Creador Pings Albion")
-async def ping_cmd(interaction):
-    await interaction.response.send_message(
-        embed=discord.Embed(title="🎯 Creador de Pings", color=0xD4A44A),
-        view=MainView(),
-    )
-
+    print(f"Bot conectado como {bot.user}")
 
 if __name__ == "__main__":
+    Thread(target=run_flask, daemon=True).start()
+    TOKEN = os.environ.get("TOKEN") or os.environ.get("DISCORD_TOKEN")
     bot.run(TOKEN)
