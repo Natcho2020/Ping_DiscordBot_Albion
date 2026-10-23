@@ -12,7 +12,7 @@ PINGS_DB_PATH = "pings.json"
 
 @app_flask.route('/')
 def home():
-    return "Bot Albion Online - ONLINE"
+    return "Bot Albion - ONLINE - Pings guardados: " + str(len(pings_db))
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -28,22 +28,37 @@ pings_db = {}
 ICONS = {"Tanque":"🛡️","Healer":"💚","Dps":"⚔️","Soporte":"🔮"}
 
 def get_icon(role_name):
-    for key, icon in ICONS.items():
-        if role_name.startswith(key):
-            return icon
+    for k,v in ICONS.items():
+        if role_name.startswith(k):
+            return v
     return "▫️"
 
 def load_pings():
+    if not os.path.exists(PINGS_DB_PATH):
+        print("No existe pings.json, se creará nuevo")
+        return {}
     try:
         with open(PINGS_DB_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
+            data = json.load(f)
+            # Limpiar pings viejos que no tienen weapons (los del codigo anterior)
+            clean = {}
+            for mid, ping in data.items():
+                if "weapons" in ping and "roles" in ping:
+                    clean[mid] = ping
+            if len(clean) != len(data):
+                print(f"Limpiados {len(data)-len(clean)} pings viejos incompatibles")
+            return clean
+    except Exception as e:
+        print(f"Error cargando pings.json: {e}, iniciando vacío")
         return {}
 
 def save_pings():
-    with open(f"{PINGS_DB_PATH}.tmp", "w", encoding="utf-8") as f:
-        json.dump(pings_db, f, ensure_ascii=False, indent=2)
-    os.replace(f"{PINGS_DB_PATH}.tmp", PINGS_DB_PATH)
+    try:
+        with open(PINGS_DB_PATH, "w", encoding="utf-8") as f:
+            json.dump(pings_db, f, ensure_ascii=False, indent=2)
+        print(f"✅ pings.json guardado con {len(pings_db)} pings")
+    except Exception as e:
+        print(f"❌ Error guardando json: {e}")
 
 def role_capacity(ping, role_name):
     return ping.get("roles", []).count(role_name)
@@ -62,9 +77,7 @@ def role_registration_count(ping, role_name):
     return sum(v == role_name for v in ping.get("registrations", {}).values())
 
 def build_main_embed(ping):
-    # Esta funcion construye el embed principal con los inscritos
     regs = ping.get("registrations", {})
-    # Invertir: rol -> user_id
     role_to_user = {role: uid for uid, role in regs.items()}
     weapons = ping.get("weapons", [])
     roles = ping.get("roles", [])
@@ -77,12 +90,12 @@ def build_main_embed(ping):
         if user_id:
             lines.append(f"{icon} `{role_slot}: {weapon}` <@{user_id}>")
         else:
-            lines.append(f"{icon} `{role_slot}: {weapon}` - Vacío")
+            lines.append(f"{icon} `{role_slot}: {weapon}`")
     
     compo_text = "\n".join(lines)
     embed = discord.Embed(
         title=f"⚔️ {ping['actividad'].upper()} - {ping['fecha']} {ping['hora']} UTC",
-        description=f"**Compo ({len(regs)}/{len(roles)})**\n{compo_text}\n\n**Nota:** {ping['comentario']}",
+        description=f"**Compo ({len(regs)}/{len(roles)})**\n{compo_text}\n\n**Nota:** {ping.get('comentario','')}",
         color=0xD4A44A,
     )
     embed.set_footer(text=f"Creador: {ping.get('creador','?')}")
@@ -93,9 +106,12 @@ class AlbionBot(commands.Bot):
         stored = load_pings()
         pings_db.update(stored)
         for mid, ping in stored.items():
-            self.add_view(InscripcionView(ping["roles"], int(mid), int(ping["thread_id"])), message_id=int(mid))
+            try:
+                self.add_view(InscripcionView(ping["roles"], int(mid), int(ping["thread_id"])), message_id=int(mid))
+            except:
+                pass
         self.add_view(MainView())
-        print(f"Restaurados: {len(stored)} + MainView")
+        print(f"Bot listo. Restaurados: {len(stored)} + MainView persistente")
 
 bot = AlbionBot(command_prefix="!", intents=intents)
 
@@ -130,13 +146,12 @@ class InscripcionButton(discord.ui.Button):
         save_pings()
         await interaction.response.defer(ephemeral=True)
 
-        # 1. Avisar en el hilo (como antes)
         try:
             thread = bot.get_channel(self.thread_id) or await bot.fetch_channel(self.thread_id)
             await thread.send(f"{interaction.user.mention} se apuntó como {self.role_name} ✅")
-        except: pass
+        except Exception as e:
+            print(f"Error hilo: {e}")
 
-        # 2. NUEVO: Editar el mensaje principal con el @ del usuario
         try:
             channel = bot.get_channel(ping["channel_id"]) or await bot.fetch_channel(ping["channel_id"])
             msg = await channel.fetch_message(self.message_id)
@@ -146,9 +161,6 @@ class InscripcionButton(discord.ui.Button):
             print(f"Error editando embed principal: {e}")
 
         await interaction.followup.send(f"Te apuntaste como {self.role_name}.", ephemeral=True)
-
-# --- EL RESTO DE TU CODIGO SIGUE IGUAL (WeaponModal, RolesView, etc) ---
-# Solo te dejo la parte clave que cambia: ComentarioModal
 
 class WeaponModal(discord.ui.Modal, title="Arma para este rol"):
     arma = discord.ui.TextInput(label="¿Qué arma?", placeholder="Ej: Camlann, Bloodletter", max_length=30)
@@ -207,7 +219,6 @@ class ComentarioModal(discord.ui.Modal, title="Comentario final"):
         guild = interaction.guild
         target = discord.utils.get(guild.text_channels, name=data["canal_id"]) or interaction.channel
         
-        # Creamos el ping temporal para generar el primer embed CON ICONOS
         temp_ping = {
             "actividad": data["actividad"], "fecha": data["fecha"], "hora": data["hora"],
             "roles": signup_roles, "weapons": data["weapons"], "registrations": {},
