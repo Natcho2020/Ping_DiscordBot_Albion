@@ -85,12 +85,19 @@ def build_main_embed(ping):
     lines = []
     for i, role_slot in enumerate(roles):
         icon = get_icon(role_slot)
-        weapon = weapons[i] if i < len(weapons) else "?"
+        weapon = weapons[i] if i < len(weapons) else "—"
         user_id = role_to_user.get(role_slot)
-        if user_id:
-            lines.append(f"{icon} `{role_slot}: {weapon}` <@{user_id}>")
+
+        # Si el arma es "—" no la mostramos
+        if weapon == "—" or weapon.strip() == "":
+            role_text = f"{role_slot}"
         else:
-            lines.append(f"{icon} `{role_slot}: {weapon}`")
+            role_text = f"{role_slot}: {weapon}"
+
+        if user_id:
+            lines.append(f"{icon} `{role_text}` <@{user_id}>")
+        else:
+            lines.append(f"{icon} `{role_text}`")
     
     compo_text = "\n".join(lines)
     embed = discord.Embed(
@@ -207,16 +214,25 @@ class InscripcionButton(discord.ui.Button):
         except Exception as e:
             print(f"Error editando: {e}")
         await interaction.followup.send(f"Te apuntaste como {self.role_name}.", ephemeral=True)
-class WeaponModal(discord.ui.Modal, title="Arma para este rol"):
-    arma = discord.ui.TextInput(label="¿Qué arma?", placeholder="Ej: Camlann, Bloodletter", max_length=30)
+
+class WeaponModal(discord.ui.Modal, title="Arma para este rol (opcional)"):
+    arma = discord.ui.TextInput(
+        label="¿Qué arma? (opcional)", 
+        placeholder="Ej: Camlann, Bloodletter - Déjalo vacío si no importa", 
+        max_length=30,
+        required=False
+    )
     def __init__(self, user_id, rol):
         super().__init__()
         self.user_id = user_id
         self.rol = rol
     async def on_submit(self, interaction):
         data = ping_data[self.user_id]
+        texto_arma = str(self.arma).strip()
+        if not texto_arma:
+            texto_arma = "—"
         data["roles"].append(self.rol)
-        data["weapons"].append(str(self.arma))
+        data["weapons"].append(texto_arma)
         await interaction.response.edit_message(embed=build_roles_embed(self.user_id), view=RolesView(self.user_id))
 
 def build_roles_embed(user_id):
@@ -228,7 +244,11 @@ def build_roles_embed(user_id):
             role = data["roles"][i]
             role_slot = role_slots[i]
             weapon = data["weapons"][i]
-            slots += f"{ICONS.get(role,'')} `{role_slot}: {weapon}`\n"
+            # Si es guión, no muestra los dos puntos
+            if weapon == "—":
+                slots += f"{ICONS.get(role,'')} `{role_slot}`\n"
+            else:
+                slots += f"{ICONS.get(role,'')} `{role_slot}: {weapon}`\n"
         else:
             slots += f"⬜ Slot {i+1} Vacío\n"
     return discord.Embed(title=f"👥 {data['actividad']} {len(data['roles'])}/{data['cupos']}", description=slots, color=0xD4A44A)
