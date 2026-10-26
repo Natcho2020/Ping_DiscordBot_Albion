@@ -35,28 +35,23 @@ def get_icon(role_name):
 
 def load_pings():
     if not os.path.exists(PINGS_DB_PATH):
-        print("No existe pings.json, se creará nuevo")
         return {}
     try:
         with open(PINGS_DB_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
-            # Limpiar pings viejos que no tienen weapons (los del codigo anterior)
             clean = {}
             for mid, ping in data.items():
                 if "weapons" in ping and "roles" in ping:
                     clean[mid] = ping
-            if len(clean) != len(data):
-                print(f"Limpiados {len(data)-len(clean)} pings viejos incompatibles")
             return clean
     except Exception as e:
-        print(f"Error cargando pings.json: {e}, iniciando vacío")
+        print(f"Error cargando pings.json: {e}")
         return {}
 
 def save_pings():
     try:
         with open(PINGS_DB_PATH, "w", encoding="utf-8") as f:
             json.dump(pings_db, f, ensure_ascii=False, indent=2)
-        print(f"✅ pings.json guardado con {len(pings_db)} pings")
     except Exception as e:
         print(f"❌ Error guardando json: {e}")
 
@@ -81,24 +76,16 @@ def build_main_embed(ping):
     role_to_user = {role: uid for uid, role in regs.items()}
     weapons = ping.get("weapons", [])
     roles = ping.get("roles", [])
-    
     lines = []
     for i, role_slot in enumerate(roles):
         icon = get_icon(role_slot)
         weapon = weapons[i] if i < len(weapons) else "—"
         user_id = role_to_user.get(role_slot)
-
-        # Si el arma es "—" no la mostramos
-        if weapon == "—" or weapon.strip() == "":
-            role_text = f"{role_slot}"
-        else:
-            role_text = f"{role_slot}: {weapon}"
-
+        role_text = f"{role_slot}" if weapon == "—" or weapon.strip() == "" else f"{role_slot}: {weapon}"
         if user_id:
             lines.append(f"{icon} `{role_text}` <@{user_id}>")
         else:
             lines.append(f"{icon} `{role_text}`")
-    
     compo_text = "\n".join(lines)
     embed = discord.Embed(
         title=f"⚔️ {ping['actividad'].upper()} - {ping['fecha']} {ping['hora']} UTC",
@@ -115,10 +102,9 @@ class AlbionBot(commands.Bot):
         for mid, ping in stored.items():
             try:
                 self.add_view(InscripcionView(ping["roles"], int(mid), int(ping["thread_id"])), message_id=int(mid))
-            except:
-                pass
+            except: pass
         self.add_view(MainView())
-        print(f"Bot listo. Restaurados: {len(stored)} + MainView persistente")
+        print(f"Bot listo. Restaurados: {len(stored)}")
 
 bot = AlbionBot(command_prefix="!", intents=intents)
 
@@ -126,14 +112,9 @@ class InscripcionView(discord.ui.View):
     def __init__(self, roles, message_id, thread_id):
         super().__init__(timeout=None)
         ping = pings_db.get(str(message_id), {})
-        # Crear botones de roles
         for idx, role in enumerate(roles):
-            disabled = False
-            if ping:
-                if role_registration_count(ping, role) >= role_capacity(ping, role):
-                    disabled = True
+            disabled = role_registration_count(ping, role) >= role_capacity(ping, role) if ping else False
             self.add_item(InscripcionButton(role, message_id, thread_id, idx, disabled))
-        # Boton de cancelar
         self.add_item(CancelarButton(message_id, thread_id))
 
 class CancelarButton(discord.ui.Button):
@@ -141,40 +122,27 @@ class CancelarButton(discord.ui.Button):
         super().__init__(label="❌ Cancelar mi inscripción", style=discord.ButtonStyle.danger, custom_id=f"cancel_{message_id}", row=1)
         self.message_id = message_id
         self.thread_id = thread_id
-
     async def callback(self, interaction: discord.Interaction):
         ping = pings_db.get(str(self.message_id))
-        if not ping:
-            await interaction.response.send_message("Ping no disponible", ephemeral=True)
-            return
-        
+        if not ping: return await interaction.response.send_message("Ping no disponible", ephemeral=True)
         uid = str(interaction.user.id)
         if uid not in ping.get("registrations", {}):
-            await interaction.response.send_message("No estás anotado en ningún rol.", ephemeral=True)
-            return
-
+            return await interaction.response.send_message("No estás anotado.", ephemeral=True)
         rol_lib = ping["registrations"].pop(uid)
         save_pings()
         await interaction.response.defer(ephemeral=True)
-
-        # Actualizar hilo y mensaje principal
         try:
             thread = bot.get_channel(self.thread_id) or await bot.fetch_channel(self.thread_id)
             await thread.send(f"{interaction.user.mention} canceló su inscripción como {rol_lib} ❌")
         except: pass
-
         try:
             channel = bot.get_channel(ping["channel_id"]) or await bot.fetch_channel(ping["channel_id"])
             msg = await channel.fetch_message(self.message_id)
-            # Reconstruir vista con botones habilitados de nuevo
             new_view = InscripcionView(ping["roles"], self.message_id, self.thread_id)
-            new_embed = build_main_embed(ping)
-            await msg.edit(embed=new_embed, view=new_view)
+            await msg.edit(embed=build_main_embed(ping), view=new_view)
             bot.add_view(new_view, message_id=self.message_id)
-        except Exception as e:
-            print(f"Error en cancelar: {e}")
-
-        await interaction.followup.send(f"Cancelaste {rol_lib}, tu cupo quedó libre.", ephemeral=True)
+        except: pass
+        await interaction.followup.send(f"Cancelaste {rol_lib}", ephemeral=True)
 
 class InscripcionButton(discord.ui.Button):
     def __init__(self, role_name, message_id, thread_id, index, disabled=False):
@@ -182,55 +150,39 @@ class InscripcionButton(discord.ui.Button):
         self.role_name = role_name
         self.message_id = message_id
         self.thread_id = thread_id
-
     async def callback(self, interaction: discord.Interaction):
         ping = pings_db.get(str(self.message_id))
-        if not ping:
-            await interaction.response.send_message("Ping no disponible", ephemeral=True)
-            return
+        if not ping: return await interaction.response.send_message("Ping no disponible", ephemeral=True)
         regs = ping.setdefault("registrations", {})
         uid = str(interaction.user.id)
-        if uid in regs:
-            await interaction.response.send_message(f"Ya estás como {regs[uid]}. Usa Cancelar para cambiar.", ephemeral=True)
-            return
+        if uid in regs: return await interaction.response.send_message(f"Ya estás como {regs[uid]}", ephemeral=True)
         if role_registration_count(ping, self.role_name) >= role_capacity(ping, self.role_name):
-            await interaction.response.send_message(f"No quedan plazas para {self.role_name}.", ephemeral=True)
-            return
+            return await interaction.response.send_message(f"No quedan plazas para {self.role_name}.", ephemeral=True)
         regs[uid] = self.role_name
         save_pings()
         await interaction.response.defer(ephemeral=True)
         try:
             thread = bot.get_channel(self.thread_id) or await bot.fetch_channel(self.thread_id)
             await thread.send(f"{interaction.user.mention} se apuntó como {self.role_name} ✅")
-        except:
-            pass
+        except: pass
         try:
             channel = bot.get_channel(ping["channel_id"]) or await bot.fetch_channel(ping["channel_id"])
             msg = await channel.fetch_message(self.message_id)
             new_view = InscripcionView(ping["roles"], self.message_id, self.thread_id)
-            new_embed = build_main_embed(ping)
-            await msg.edit(embed=new_embed, view=new_view)
+            await msg.edit(embed=build_main_embed(ping), view=new_view)
             bot.add_view(new_view, message_id=self.message_id)
-        except Exception as e:
-            print(f"Error editando: {e}")
+        except: pass
         await interaction.followup.send(f"Te apuntaste como {self.role_name}.", ephemeral=True)
 
 class WeaponModal(discord.ui.Modal, title="Arma para este rol (opcional)"):
-    arma = discord.ui.TextInput(
-        label="¿Qué arma? (opcional)", 
-        placeholder="Ej: Camlann, Bloodletter - Déjalo vacío si no importa", 
-        max_length=30,
-        required=False
-    )
+    arma = discord.ui.TextInput(label="¿Qué arma? (opcional)", placeholder="Déjalo vacío si no importa", max_length=30, required=False)
     def __init__(self, user_id, rol):
         super().__init__()
         self.user_id = user_id
         self.rol = rol
     async def on_submit(self, interaction):
         data = ping_data[self.user_id]
-        texto_arma = str(self.arma).strip()
-        if not texto_arma:
-            texto_arma = "—"
+        texto_arma = str(self.arma).strip() or "—"
         data["roles"].append(self.rol)
         data["weapons"].append(texto_arma)
         await interaction.response.edit_message(embed=build_roles_embed(self.user_id), view=RolesView(self.user_id))
@@ -244,7 +196,6 @@ def build_roles_embed(user_id):
             role = data["roles"][i]
             role_slot = role_slots[i]
             weapon = data["weapons"][i]
-            # Si es guión, no muestra los dos puntos
             if weapon == "—":
                 slots += f"{ICONS.get(role,'')} `{role_slot}`\n"
             else:
@@ -265,12 +216,19 @@ class RolesView(discord.ui.View):
     async def dps(self, i, b): await i.response.send_modal(WeaponModal(self.user_id, "Dps"))
     @discord.ui.button(label="🔮 Soporte", style=discord.ButtonStyle.secondary)
     async def soporte(self, i, b): await i.response.send_modal(WeaponModal(self.user_id, "Soporte"))
+    @discord.ui.button(label="↩️ Quitar último", style=discord.ButtonStyle.danger, row=1)
+    async def quitar(self, interaction: discord.Interaction, button):
+        data = ping_data.get(self.user_id)
+        if not data or not data["roles"]:
+            return await interaction.response.send_message("No hay roles para quitar.", ephemeral=True)
+        data["roles"].pop()
+        data["weapons"].pop() if data["weapons"] else None
+        await interaction.response.edit_message(embed=build_roles_embed(self.user_id), view=RolesView(self.user_id))
     @discord.ui.button(label="Siguiente →", style=discord.ButtonStyle.success, row=1)
     async def siguiente(self, interaction, button):
         data = ping_data[self.user_id]
         if len(data["roles"]) != data["cupos"]:
-            await interaction.response.send_message(f"Llena {data['cupos']} slots", ephemeral=True)
-            return
+            return await interaction.response.send_message(f"Llena {data['cupos']} slots. Llevas {len(data['roles'])}/{data['cupos']}", ephemeral=True)
         await interaction.response.edit_message(embed=discord.Embed(title="💬 Elige sala y escribe comentario", description="Elige donde se enviará el @everyone", color=0xD4A44A), view=CanalView(self.user_id, interaction.guild))
 
 class ComentarioModal(discord.ui.Modal, title="Comentario final"):
@@ -283,23 +241,11 @@ class ComentarioModal(discord.ui.Modal, title="Comentario final"):
         signup_roles = number_role_slots(data["roles"])
         guild = interaction.guild
         target = discord.utils.get(guild.text_channels, name=data["canal_id"]) or interaction.channel
-        
-        temp_ping = {
-            "actividad": data["actividad"], "fecha": data["fecha"], "hora": data["hora"],
-            "roles": signup_roles, "weapons": data["weapons"], "registrations": {},
-            "comentario": data["comentario"], "creador": interaction.user.display_name
-        }
+        temp_ping = {"actividad": data["actividad"], "fecha": data["fecha"], "hora": data["hora"], "roles": signup_roles, "weapons": data["weapons"], "registrations": {}, "comentario": data["comentario"], "creador": interaction.user.display_name}
         embed = build_main_embed(temp_ping)
-
         message = await target.send(content="@everyone", embed=embed)
         thread = await message.create_thread(name=f"Inscripciones {data['actividad']} {data['fecha']}"[:100], auto_archive_duration=60)
-
-        ping = {
-            "guild_id": interaction.guild_id, "channel_id": target.id, "thread_id": thread.id,
-            "roles": signup_roles, "weapons": data["weapons"], "registrations": {},
-            "actividad": data["actividad"], "fecha": data["fecha"], "hora": data["hora"],
-            "comentario": data["comentario"], "creador": interaction.user.display_name
-        }
+        ping = {"guild_id": interaction.guild_id, "channel_id": target.id, "thread_id": thread.id, "roles": signup_roles, "weapons": data["weapons"], "registrations": {}, "actividad": data["actividad"], "fecha": data["fecha"], "hora": data["hora"], "comentario": data["comentario"], "creador": interaction.user.display_name}
         pings_db[str(message.id)] = ping
         save_pings()
         view = InscripcionView(ping["roles"], message.id, thread.id)
@@ -312,7 +258,6 @@ class CanalSelect(discord.ui.Select):
     def __init__(self, user_id, guild):
         self.user_id = user_id
         canales = [c for c in guild.text_channels if c.permissions_for(guild.me).send_messages][:25]
-        if not canales: canales = guild.text_channels[:25]
         options = [discord.SelectOption(label=f"#{c.name}", value=c.name) for c in canales]
         super().__init__(placeholder="1. Elige la sala...", options=options, min_values=1, max_values=1)
     async def callback(self, interaction: discord.Interaction):
@@ -333,8 +278,7 @@ class FechaCorreccionView(discord.ui.View):
     @discord.ui.button(label="Corregir datos", style=discord.ButtonStyle.primary)
     async def corregir(self, interaction, button):
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("Solo quien inició este ping puede corregir.", ephemeral=True)
-            return
+            return await interaction.response.send_message("Solo quien inició este ping puede corregir.", ephemeral=True)
         await interaction.response.send_modal(FechaModal(self.user_id, self.actividad, defaults=self.defaults))
 
 class FechaModal(discord.ui.Modal, title="Fecha Hora Cupos"):
@@ -360,8 +304,7 @@ class FechaModal(discord.ui.Modal, title="Fecha Hora Cupos"):
         except: cupos = 0
         if not 1 <= cupos <= 20: errores.append("Cupos 1-20")
         if errores:
-            await interaction.response.send_message("\n".join(errores), view=FechaCorreccionView(self.user_id, self.actividad, {"fecha": fecha, "hora": hora, "cupos": cupos_texto}), ephemeral=True)
-            return
+            return await interaction.response.send_message("\n".join(errores), view=FechaCorreccionView(self.user_id, self.actividad, {"fecha": fecha, "hora": hora, "cupos": cupos_texto}), ephemeral=True)
         ping_data[self.user_id] = {"actividad": self.actividad, "fecha": fecha, "hora": hora, "cupos": cupos, "roles": [], "weapons": []}
         await interaction.response.send_message(embed=build_roles_embed(self.user_id), view=RolesView(self.user_id), ephemeral=True)
 
@@ -402,4 +345,7 @@ async def on_ready():
 if __name__ == "__main__":
     Thread(target=run_flask, daemon=True).start()
     TOKEN = os.environ.get("TOKEN") or os.environ.get("DISCORD_TOKEN")
-    bot.run(TOKEN)
+    if not TOKEN:
+        print("❌ Falta TOKEN en variables de entorno")
+    else:
+        bot.run(TOKEN)
