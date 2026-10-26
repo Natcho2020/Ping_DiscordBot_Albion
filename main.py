@@ -44,8 +44,7 @@ def load_pings():
                 if "weapons" in ping and "roles" in ping:
                     clean[mid] = ping
             return clean
-    except Exception as e:
-        print(f"Error cargando pings.json: {e}")
+    except:
         return {}
 
 def save_pings():
@@ -142,7 +141,7 @@ class CancelarButton(discord.ui.Button):
             await msg.edit(embed=build_main_embed(ping), view=new_view)
             bot.add_view(new_view, message_id=self.message_id)
         except: pass
-        await interaction.followup.send(f"Cancelaste {rol_lib}", ephemeral=True)
+        await interaction.followup.send(f"Cancelaste {rol_lib}", ephemeral=True, delete_after=10)
 
 class InscripcionButton(discord.ui.Button):
     def __init__(self, role_name, message_id, thread_id, index, disabled=False):
@@ -155,9 +154,9 @@ class InscripcionButton(discord.ui.Button):
         if not ping: return await interaction.response.send_message("Ping no disponible", ephemeral=True)
         regs = ping.setdefault("registrations", {})
         uid = str(interaction.user.id)
-        if uid in regs: return await interaction.response.send_message(f"Ya estás como {regs[uid]}", ephemeral=True)
+        if uid in regs: return await interaction.response.send_message(f"Ya estás como {regs[uid]}", ephemeral=True, delete_after=10)
         if role_registration_count(ping, self.role_name) >= role_capacity(ping, self.role_name):
-            return await interaction.response.send_message(f"No quedan plazas para {self.role_name}.", ephemeral=True)
+            return await interaction.response.send_message(f"No quedan plazas para {self.role_name}.", ephemeral=True, delete_after=10)
         regs[uid] = self.role_name
         save_pings()
         await interaction.response.defer(ephemeral=True)
@@ -172,7 +171,7 @@ class InscripcionButton(discord.ui.Button):
             await msg.edit(embed=build_main_embed(ping), view=new_view)
             bot.add_view(new_view, message_id=self.message_id)
         except: pass
-        await interaction.followup.send(f"Te apuntaste como {self.role_name}.", ephemeral=True)
+        await interaction.followup.send(f"Te apuntaste como {self.role_name}.", ephemeral=True, delete_after=10)
 
 class WeaponModal(discord.ui.Modal, title="Arma para este rol (opcional)"):
     arma = discord.ui.TextInput(label="¿Qué arma? (opcional)", placeholder="Déjalo vacío si no importa", max_length=30, required=False)
@@ -220,7 +219,7 @@ class RolesView(discord.ui.View):
     async def quitar(self, interaction: discord.Interaction, button):
         data = ping_data.get(self.user_id)
         if not data or not data["roles"]:
-            return await interaction.response.send_message("No hay roles para quitar.", ephemeral=True)
+            return await interaction.response.send_message("No hay roles para quitar.", ephemeral=True, delete_after=5)
         data["roles"].pop()
         data["weapons"].pop() if data["weapons"] else None
         await interaction.response.edit_message(embed=build_roles_embed(self.user_id), view=RolesView(self.user_id))
@@ -228,7 +227,7 @@ class RolesView(discord.ui.View):
     async def siguiente(self, interaction, button):
         data = ping_data[self.user_id]
         if len(data["roles"]) != data["cupos"]:
-            return await interaction.response.send_message(f"Llena {data['cupos']} slots. Llevas {len(data['roles'])}/{data['cupos']}", ephemeral=True)
+            return await interaction.response.send_message(f"Llena {data['cupos']} slots. Llevas {len(data['roles'])}/{data['cupos']}", ephemeral=True, delete_after=5)
         await interaction.response.edit_message(embed=discord.Embed(title="💬 Elige sala y escribe comentario", description="Elige donde se enviará el @everyone", color=0xD4A44A), view=CanalView(self.user_id, interaction.guild))
 
 class ComentarioModal(discord.ui.Modal, title="Comentario final"):
@@ -252,7 +251,11 @@ class ComentarioModal(discord.ui.Modal, title="Comentario final"):
         await message.edit(view=view)
         bot.add_view(view, message_id=message.id)
         await thread.send("Hilo de inscripción creado. Pulsa el botón de tu rol en el ping para apuntarte.")
-        await interaction.followup.send(f"✅ Ping enviado en {target.mention}", ephemeral=True)
+        # Borra el panel de creación privado
+        try:
+            await interaction.delete_original_response()
+        except: pass
+        await interaction.followup.send(f"✅ Ping enviado en {target.mention}", ephemeral=True, delete_after=10)
 
 class CanalSelect(discord.ui.Select):
     def __init__(self, user_id, guild):
@@ -262,7 +265,10 @@ class CanalSelect(discord.ui.Select):
         super().__init__(placeholder="1. Elige la sala...", options=options, min_values=1, max_values=1)
     async def callback(self, interaction: discord.Interaction):
         ping_data[self.user_id]["canal_id"] = self.values[0]
-        await interaction.response.send_message(f"Canal: #{self.values[0]} seleccionado.", view=ComentarioButtonView(self.user_id), ephemeral=True)
+        await interaction.response.edit_message(
+            embed=discord.Embed(title=f"✅ Canal: #{self.values[0]}", description="Ahora escribe el comentario final", color=0xD4A44A),
+            view=ComentarioButtonView(self.user_id)
+        )
 
 class ComentarioButtonView(discord.ui.View):
     def __init__(self, user_id): super().__init__(timeout=300); self.user_id = user_id
@@ -278,7 +284,7 @@ class FechaCorreccionView(discord.ui.View):
     @discord.ui.button(label="Corregir datos", style=discord.ButtonStyle.primary)
     async def corregir(self, interaction, button):
         if interaction.user.id != self.user_id:
-            return await interaction.response.send_message("Solo quien inició este ping puede corregir.", ephemeral=True)
+            return await interaction.response.send_message("Solo quien inició este ping puede corregir.", ephemeral=True, delete_after=5)
         await interaction.response.send_modal(FechaModal(self.user_id, self.actividad, defaults=self.defaults))
 
 class FechaModal(discord.ui.Modal, title="Fecha Hora Cupos"):
@@ -304,7 +310,7 @@ class FechaModal(discord.ui.Modal, title="Fecha Hora Cupos"):
         except: cupos = 0
         if not 1 <= cupos <= 20: errores.append("Cupos 1-20")
         if errores:
-            return await interaction.response.send_message("\n".join(errores), view=FechaCorreccionView(self.user_id, self.actividad, {"fecha": fecha, "hora": hora, "cupos": cupos_texto}), ephemeral=True)
+            return await interaction.response.send_message("\n".join(errores), view=FechaCorreccionView(self.user_id, self.actividad, {"fecha": fecha, "hora": hora, "cupos": cupos_texto}), ephemeral=True, delete_after=10)
         ping_data[self.user_id] = {"actividad": self.actividad, "fecha": fecha, "hora": hora, "cupos": cupos, "roles": [], "weapons": []}
         await interaction.response.send_message(embed=build_roles_embed(self.user_id), view=RolesView(self.user_id), ephemeral=True)
 
@@ -326,7 +332,7 @@ class AgregarModal(discord.ui.Modal, title="Agregar actividad"):
     nombre = discord.ui.TextInput(label="Nombre", placeholder="Ej: ZVZ 20")
     async def on_submit(self, interaction):
         actividades.append(str(self.nombre))
-        await interaction.response.send_message(f"✅ '{self.nombre}' agregada!", ephemeral=True)
+        await interaction.response.send_message(f"✅ '{self.nombre}' agregada!", ephemeral=True, delete_after=5)
 
 class MainView(discord.ui.View):
     def __init__(self): super().__init__(timeout=None)
