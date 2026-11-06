@@ -117,14 +117,68 @@ class AlbionBot(commands.Bot):
 
 bot = AlbionBot(command_prefix="!", intents=intents)
 
+# ===== VISTA DE INSCRIPCION CON SELECT =====
 class InscripcionView(discord.ui.View):
     def __init__(self, roles, message_id, thread_id):
         super().__init__(timeout=None)
-        ping = pings_db.get(str(message_id), {})
-        for idx, role in enumerate(roles):
-            disabled = role_registration_count(ping, role) >= role_capacity(ping, role) if ping else False
-            self.add_item(InscripcionButton(role, message_id, thread_id, idx, disabled))
+        self.add_item(InscripcionSelect(roles, message_id, thread_id))
         self.add_item(CancelarButton(message_id, thread_id))
+
+class InscripcionSelect(discord.ui.Select):
+    def __init__(self, roles, message_id, thread_id):
+        self.message_id = message_id
+        self.thread_id = thread_id
+        ping = pings_db.get(str(message_id), {})
+        regs = ping.get("registrations", {}) if ping else {}
+        weapons = ping.get("weapons", []) if ping else []
+
+        options = []
+        for idx, role_slot in enumerate(roles):
+            weapon = weapons[idx] if idx < len(weapons) else "—"
+            ocupado = role_slot in regs.values()
+            label = f"{role_slot}: {weapon}" if weapon != "—" else role_slot
+            if ocupado:
+                label += " - OCUPADO"
+            options.append(discord.SelectOption(label=label[:100], value=role_slot, description=f"Arma: {weapon}" if weapon != "—" else "Sin arma definida", emoji="✅" if ocupado else "▫️"))
+
+        super().__init__(placeholder="🎯 Elige tu slot - Healer 1, Healer 2...", options=options, min_values=1, max_values=1, custom_id=f"select_{message_id}", row=0)
+
+    async def callback(self, interaction):
+        try:
+            ping = pings_db.get(str(self.message_id))
+            if not ping:
+                return await interaction.response.send_message("Ping no disponible", ephemeral=True, delete_after=5)
+            
+            elegido = self.values[0]
+            regs = ping.setdefault("registrations", {})
+            uid = str(interaction.user.id)
+
+            if uid in regs:
+                return await interaction.response.send_message(f"Ya estás como {regs[uid]}. Cancela primero si quieres cambiar.", ephemeral=True, delete_after=5)
+            
+            if elegido in regs.values():
+                return await interaction.response.send_message(f"Ese slot {elegido} ya está ocupado, elige otro.", ephemeral=True, delete_after=5)
+
+            regs[uid] = elegido
+            save_pings()
+            await interaction.response.defer(ephemeral=True)
+
+            try:
+                thread = bot.get_channel(self.thread_id) or await bot.fetch_channel(self.thread_id)
+                await thread.send(f"{interaction.user.mention} se apuntó como {elegido} ✅")
+            except: pass
+
+            try:
+                channel = bot.get_channel(ping["channel_id"]) or await bot.fetch_channel(ping["channel_id"])
+                msg = await channel.fetch_message(self.message_id)
+                new_view = InscripcionView(ping["roles"], self.message_id, self.thread_id)
+                await msg.edit(embed=build_main_embed(ping), view=new_view)
+                bot.add_view(new_view, message_id=self.message_id)
+            except: pass
+
+            await interaction.followup.send(f"Te apuntaste como {elegido}.", ephemeral=True, delete_after=5)
+        except Exception as e:
+            print(f"Error Inscripcion Select: {e}")
 
 class CancelarButton(discord.ui.Button):
     def __init__(self, message_id, thread_id):
@@ -155,39 +209,6 @@ class CancelarButton(discord.ui.Button):
             await interaction.followup.send(f"Cancelaste {rol_lib}", ephemeral=True, delete_after=5)
         except Exception as e:
             print(f"Error Cancelar: {e}")
-
-class InscripcionButton(discord.ui.Button):
-    def __init__(self, role_name, message_id, thread_id, index, disabled=False):
-        super().__init__(label=f"Apuntarme: {role_name}", style=discord.ButtonStyle.secondary, custom_id=f"signup_{message_id}_{index}", disabled=disabled)
-        self.role_name = role_name
-        self.message_id = message_id
-        self.thread_id = thread_id
-    async def callback(self, interaction):
-        try:
-            ping = pings_db.get(str(self.message_id))
-            if not ping: return await interaction.response.send_message("Ping no disponible", ephemeral=True, delete_after=5)
-            regs = ping.setdefault("registrations", {})
-            uid = str(interaction.user.id)
-            if uid in regs: return await interaction.response.send_message(f"Ya estás como {regs[uid]}", ephemeral=True, delete_after=5)
-            if role_registration_count(ping, self.role_name) >= role_capacity(ping, self.role_name):
-                return await interaction.response.send_message(f"No quedan plazas para {self.role_name}.", ephemeral=True, delete_after=5)
-            regs[uid] = self.role_name
-            save_pings()
-            await interaction.response.defer(ephemeral=True)
-            try:
-                thread = bot.get_channel(self.thread_id) or await bot.fetch_channel(self.thread_id)
-                await thread.send(f"{interaction.user.mention} se apuntó como {self.role_name} ✅")
-            except: pass
-            try:
-                channel = bot.get_channel(ping["channel_id"]) or await bot.fetch_channel(ping["channel_id"])
-                msg = await channel.fetch_message(self.message_id)
-                new_view = InscripcionView(ping["roles"], self.message_id, self.thread_id)
-                await msg.edit(embed=build_main_embed(ping), view=new_view)
-                bot.add_view(new_view, message_id=self.message_id)
-            except: pass
-            await interaction.followup.send(f"Te apuntaste como {self.role_name}.", ephemeral=True, delete_after=5)
-        except Exception as e:
-            print(f"Error Inscripcion: {e}")
 
 class WeaponModal(discord.ui.Modal, title="Arma para este rol (opcional)"):
     arma = discord.ui.TextInput(label="¿Qué arma? (opcional)", placeholder="Déjalo vacío si no importa", max_length=30, required=False)
